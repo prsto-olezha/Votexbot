@@ -1,56 +1,47 @@
-import asyncio
-from aiogram import Bot, Dispatcher
 import logging
-import schedule
-import datetime
-import sys
-import config.token as token
-from src.TWR import ThreadWithReturn
-from scripts.handlers import router
-from scripts.admin_handlers import router as admin_router
-import src.FSM as FSM
+from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+import uvicorn
+from contextlib import asynccontextmanager
+from config.net import url_webhook
+from create_bot import bot, dp
+from fastapi.responses import HTMLResponse
+from fastapi.requests import Request
+from aiogram.filters import CommandStart, Command
+from aiogram.types import Message, Update
+from aiogram import F
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await bot.set_webhook(url=url_webhook+"/webhook",
+                          allowed_updates=dp.resolve_used_update_types(),
+                          drop_pending_updates=True)
+    yield
+    await bot.delete_webhook()
 
-bot = Bot(token=token.TOKEN)
-dp = Dispatcher(storage=FSM.storage)
+app = FastAPI(lifespan=lifespan)
+# app.mount("/static", StaticFiles(directory="src/static"), name="static")
+templates = Jinja2Templates(directory="src/templates")
 
+@dp.message()
+async def start(message: Message) -> None:
+    await message.answer('Привет!')
 
-def log_timer():
-    schedule.every().day.at("00:00", tz="Europe/Moscow").do(switch_logfile, datetime.datetime.now().date())
-    while True:
-        schedule.run_pending()
+@app.get("/", response_class=HTMLResponse)
+async def read_root(request: Request):
+    print("somethink")
+    return templates.TemplateResponse("index.html", {"request": request})
 
-
-def switch_logfile(date: datetime.date):
-    logging.basicConfig(filename=f"src/logs/{date}.log",
-                        level=logging.INFO,
-                        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-
-
-async def main():
-    dp.include_router(router)
-    dp.include_router(admin_router)
-    await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(bot)
-
+@app.post("/webhook")
+async def webhook(request: Request) -> None:
+    update = Update.model_validate(await request.json(), context={"bot": bot})
+    await dp.feed_update(bot, update)
 
 if __name__ == "__main__":
-    try:
-        switch_logfile(datetime.datetime.now().date())
-        logging.info("Timer started!")
-        print()
+    logging.basicConfig(
+        level=logging.INFO,
+        format=u'%(filename)s:%(lineno)d #%(levelname)-8s [%(asctime)s] - %(name)s - %(message)s',
+    )
 
-        threads = [
-            ThreadWithReturn(target=log_timer)
-        ]
-
-        for thread in threads:
-            thread.daemon = True
-            thread.start()
-  
-        print("Started!")
-        logging.info("Bot started!")
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        print("Stopped!")
-        sys.exit()
+    uvicorn.run(app, host="0.0.0.0", port=8000)
